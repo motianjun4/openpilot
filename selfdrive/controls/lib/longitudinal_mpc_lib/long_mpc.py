@@ -24,10 +24,10 @@ SOURCES = ['lead0', 'lead1', 'cruise', 'e2e']
 
 X_DIM = 3
 U_DIM = 1
-PARAM_DIM = 6
+PARAM_DIM = 4
 COST_E_DIM = 5
 COST_DIM = COST_E_DIM + 1
-CONSTR_DIM = 4
+CONSTR_DIM = 3
 
 X_EGO_OBSTACLE_COST = 3.
 X_EGO_COST = 0.
@@ -88,13 +88,11 @@ def gen_long_model():
   model.xdot = vertcat(x_ego_dot, v_ego_dot, a_ego_dot)
 
   # live parameters
-  a_min = SX.sym('a_min')
-  a_max = SX.sym('a_max')
   x_obstacle = SX.sym('x_obstacle')
   prev_a = SX.sym('prev_a')
   lead_t_follow = SX.sym('lead_t_follow')
   lead_danger_factor = SX.sym('lead_danger_factor')
-  model.p = vertcat(a_min, a_max, x_obstacle, prev_a, lead_t_follow, lead_danger_factor)
+  model.p = vertcat(x_obstacle, prev_a, lead_t_follow, lead_danger_factor)
 
   # dynamics model
   f_expl = vertcat(v_ego, a_ego, j_ego)
@@ -125,11 +123,10 @@ def gen_long_ocp():
   x_ego, v_ego, a_ego = ocp.model.x[0], ocp.model.x[1], ocp.model.x[2]
   j_ego = ocp.model.u[0]
 
-  a_min, a_max = ocp.model.p[0], ocp.model.p[1]
-  x_obstacle = ocp.model.p[2]
-  prev_a = ocp.model.p[3]
-  lead_t_follow = ocp.model.p[4]
-  lead_danger_factor = ocp.model.p[5]
+  x_obstacle = ocp.model.p[0]
+  prev_a = ocp.model.p[1]
+  lead_t_follow = ocp.model.p[2]
+  lead_danger_factor = ocp.model.p[3]
 
   ocp.cost.yref = np.zeros((COST_DIM, ))
   ocp.cost.yref_e = np.zeros((COST_E_DIM, ))
@@ -153,14 +150,13 @@ def gen_long_ocp():
   # the obstacle, which is treated as a slack constraint so it
   # behaves like an asymmetrical cost.
   constraints = vertcat(v_ego,
-                        (a_ego - a_min),
-                        (a_max - a_ego),
+                        a_ego,
                         ((x_obstacle - x_ego) - lead_danger_factor * (desired_dist_comfort)) / (v_ego + 10.))
   ocp.model.con_h_expr = constraints
 
   x0 = np.zeros(X_DIM)
   ocp.constraints.x0 = x0
-  ocp.parameter_values = np.array([-1.2, 1.2, 0.0, 0.0, T_FOLLOW, LEAD_DANGER_FACTOR])
+  ocp.parameter_values = np.array([0.0, 0.0, T_FOLLOW, LEAD_DANGER_FACTOR])
 
   # We put all constraint cost weights to 0 and only set them at runtime
   cost_weights = np.zeros(CONSTR_DIM)
@@ -170,7 +166,7 @@ def gen_long_ocp():
   ocp.cost.zu = cost_weights
 
   ocp.constraints.lh = np.zeros(CONSTR_DIM)
-  ocp.constraints.uh = 1e4*np.ones(CONSTR_DIM)
+  ocp.constraints.uh = np.zeros(CONSTR_DIM)
   ocp.constraints.idxsh = np.arange(CONSTR_DIM)
 
   # The HPIPM solver can give decent solutions even when it is stopped early
@@ -220,6 +216,10 @@ class LongitudinalMpc:
     self.params = np.zeros((N+1, PARAM_DIM))
     for i in range(N+1):
       self.solver.set(i, 'x', np.zeros(X_DIM))
+    self.lower_limits = np.zeros((N,CONSTR_DIM))
+    self.upper_limits = np.zeros((N,CONSTR_DIM))
+    self.upper_limits[:,0] = 1e4
+    self.upper_limits[:,2] = 1e4
     self.last_cloudlog_t = 0
     self.status = False
     self.crash_cnt = 0.0
@@ -243,20 +243,22 @@ class LongitudinalMpc:
     # causing issues with the C interface.
     self.solver.cost_set(N, 'W', np.copy(W[:COST_E_DIM, :COST_E_DIM]))
 
-    # Set L2 slack cost on lower bound constraints
+    # Set L2 slack cost on lower and upper bound constraints
     Zl = np.array(constraint_cost_weights)
+    Zu = np.array(constraint_cost_weights)
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
+      self.solver.cost_set(i, 'Zu', Zu)
 
   def set_weights(self, prev_accel_constraint=True):
     if self.mode == 'acc':
       a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
       cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, a_change_cost, J_EGO_COST]
-      constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
+      constraint_cost_weights = [LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     elif self.mode == 'blended':
       a_change_cost = 40.0 if prev_accel_constraint else 0
       cost_weights = [0., 0.1, 0.2, 5.0, a_change_cost, 1.0]
-      constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, 50.0]
+      constraint_cost_weights = [LIMIT_COST, LIMIT_COST, 50.0]
     else:
       raise NotImplementedError(f'Planner mode {self.mode} not recognized in planner cost set')
     self.set_cost_weights(cost_weights, constraint_cost_weights)
@@ -319,12 +321,12 @@ class LongitudinalMpc:
     lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
-    self.params[:,0] = MIN_ACCEL
-    self.params[:,1] = self.max_a
+    self.lower_limits[:,1] = MIN_ACCEL
+    self.upper_limits[:,1] = self.max_a
 
     # Update in ACC mode or ACC/e2e blend
     if self.mode == 'acc':
-      self.params[:,5] = LEAD_DANGER_FACTOR
+      self.params[:,3] = LEAD_DANGER_FACTOR
 
       # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
       # when the leads are no factor.
@@ -341,7 +343,7 @@ class LongitudinalMpc:
       x[:], v[:], a[:], j[:] = 0.0, 0.0, 0.0, 0.0
 
     elif self.mode == 'blended':
-      self.params[:,5] = 1.0
+      self.params[:,3] = 1.0
 
       x_obstacles = np.column_stack([lead_0_obstacle,
                                      lead_1_obstacle])
@@ -361,13 +363,10 @@ class LongitudinalMpc:
     self.yref[:,2] = v
     self.yref[:,3] = a
     self.yref[:,5] = j
-    for i in range(N):
-      self.solver.set(i, "yref", self.yref[i])
-    self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
-    self.params[:,2] = np.min(x_obstacles, axis=1)
-    self.params[:,3] = np.copy(self.prev_a)
-    self.params[:,4] = T_FOLLOW
+    self.params[:,0] = np.min(x_obstacles, axis=1)
+    self.params[:,1] = np.copy(self.prev_a)
+    self.params[:,2] = T_FOLLOW
 
     self.run()
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
@@ -388,8 +387,14 @@ class LongitudinalMpc:
   def run(self):
     # t0 = sec_since_boot()
     # reset = 0
+    for i in range(N):
+      self.solver.set(i, "yref", self.yref[i])
+    self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
     for i in range(N+1):
       self.solver.set(i, 'p', self.params[i])
+      if i < N:
+        self.solver.constraints_set(i, "lh", self.lower_limits[i])
+        self.solver.constraints_set(i, "uh", self.upper_limits[i])
     self.solver.constraints_set(0, "lbx", self.x0)
     self.solver.constraints_set(0, "ubx", self.x0)
 
