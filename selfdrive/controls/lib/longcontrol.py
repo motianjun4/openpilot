@@ -8,8 +8,8 @@ from selfdrive.modeld.constants import T_IDXS
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
 
-ACCELS =   [0.0, 1.0, 1.0, -3.5, -3.5, 0.0]
-ACCELS_T = [1.0, 2.0, 10.0, 12.0, 12.0, 13.0]
+ACCELS =   [0.0, -2.0, -2.0]
+ACCELS_T = [1.0, 2.0, 10.0]
 
 def long_control_state_trans(CP, active, long_control_state, v_ego, v_target,
                              v_target_1sec, brake_pressed, cruise_standstill):
@@ -77,9 +77,11 @@ class LongControl:
     if not active:
       output_accel = 0.
       self.t = 0.0
+      self.long_control_state = LongCtrlState.off
     else:
       self.t += DT_CTRL
       output_accel = interp(self.t, ACCELS_T, ACCELS)
+      self.long_control_state = LongCtrlState.stopping
 
 
     self.last_output_accel = clip(output_accel, accel_limits[0], accel_limits[1])
