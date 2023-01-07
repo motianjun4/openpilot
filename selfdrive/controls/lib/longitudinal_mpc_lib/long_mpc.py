@@ -151,8 +151,10 @@ def gen_long_ocp():
   # behaves like an asymmetrical cost.
   constraints = vertcat(v_ego,
                         a_ego,
+                        #-x_ego)
                         ((x_obstacle - x_ego) - lead_danger_factor * (desired_dist_comfort)) / (v_ego + 10.))
   ocp.model.con_h_expr = constraints
+  ocp.model.con_h_expr_e = constraints
 
   x0 = np.zeros(X_DIM)
   ocp.constraints.x0 = x0
@@ -164,10 +166,17 @@ def gen_long_ocp():
   ocp.cost.Zl = cost_weights
   ocp.cost.Zu = cost_weights
   ocp.cost.zu = cost_weights
+  ocp.cost.zl_e = cost_weights
+  ocp.cost.Zl_e = cost_weights
+  ocp.cost.Zu_e = cost_weights
+  ocp.cost.zu_e = cost_weights
 
   ocp.constraints.lh = np.zeros(CONSTR_DIM)
   ocp.constraints.uh = np.zeros(CONSTR_DIM)
+  ocp.constraints.lh_e = np.zeros(CONSTR_DIM)
+  ocp.constraints.uh_e = np.zeros(CONSTR_DIM)
   ocp.constraints.idxsh = np.arange(CONSTR_DIM)
+  ocp.constraints.idxsh_e = np.arange(CONSTR_DIM)
 
   # The HPIPM solver can give decent solutions even when it is stopped early
   # Which is critical for our purpose where compute time is strictly bounded
@@ -216,8 +225,8 @@ class LongitudinalMpc:
     self.params = np.zeros((N+1, PARAM_DIM))
     for i in range(N+1):
       self.solver.set(i, 'x', np.zeros(X_DIM))
-    self.lower_limits = np.zeros((N,CONSTR_DIM))
-    self.upper_limits = np.zeros((N,CONSTR_DIM))
+    self.lower_limits = np.zeros((N+1,CONSTR_DIM))
+    self.upper_limits = np.zeros((N+1,CONSTR_DIM))
     self.upper_limits[:,0] = 1e4
     self.upper_limits[:,2] = 1e4
     self.last_cloudlog_t = 0
@@ -246,7 +255,7 @@ class LongitudinalMpc:
     # Set L2 slack cost on lower and upper bound constraints
     Zl = np.array(constraint_cost_weights)
     Zu = np.array(constraint_cost_weights)
-    for i in range(N):
+    for i in range(N+1):
       self.solver.cost_set(i, 'Zl', Zl)
       self.solver.cost_set(i, 'Zu', Zu)
 
@@ -392,9 +401,8 @@ class LongitudinalMpc:
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
     for i in range(N+1):
       self.solver.set(i, 'p', self.params[i])
-      if i < N:
-        self.solver.constraints_set(i, "lh", self.lower_limits[i])
-        self.solver.constraints_set(i, "uh", self.upper_limits[i])
+      self.solver.constraints_set(i, "lh", self.lower_limits[i])
+      self.solver.constraints_set(i, "uh", self.upper_limits[i])
     self.solver.constraints_set(0, "lbx", self.x0)
     self.solver.constraints_set(0, "ubx", self.x0)
 
